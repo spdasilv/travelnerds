@@ -6,12 +6,14 @@ from string import ascii_uppercase
 # Let W be the normalized weight of the interest point.
 # Let T represent the average time spent visiting the interest point.
 class InterestPoint:
-    def __init__(self, x=None, y=None, w=None, t=None, name=None):
-        self.x = None
-        self.y = None
-        self.w = None
-        self.t = None
-        self.name = None
+    def __init__(self, x=None, y=None, w=None, t=None, name=None, t_open=None, t_close=None):
+        # self.x = None
+        # self.y = None
+        # self.w = None
+        # self.t = None
+        # self.t_open = None
+        # self.t_close = None
+        # self.name = None
         if x is not None:
             self.x = x
         else:
@@ -28,6 +30,14 @@ class InterestPoint:
             self.t = t
         else:
             self.t = int(random.random() * 120)
+        if t_open is not None:
+            self.t_open = t_open
+        else:
+            self.t_open = 540
+        if t_close is not None:
+            self.t_close = t_close
+        else:
+            self.t_close = 1080
         if name is not None:
             self.name = name
         else:
@@ -58,17 +68,20 @@ class InterestPoint:
         return str(self.getX()) + ", " + str(self.getY()) + ", " + str(self.getW()) + ", " + str(self.getT()) + ", " + str(self.getName())
 
 class Bucket:
-    timeAvailable = 0
+    timeUsed = 0
+    start_time = None
+    end_time = None
     totalWeight = 0
 
-    def __init__(self, time):
-        self.timeAvailable = time
+    def __init__(self, start_time, end_time):
+        self.start_time = start_time
+        self.end_time = end_time
 
     def getTime(self, index):
         return self.destinationPoints[index]
 
-    def decrementTime(self, time):
-        self.timeAvailable -= time
+    def incrementTime(self, time):
+        self.timeUsed += time
 
     def getWeight(self, index):
         return self.destinationPoints[index]
@@ -77,7 +90,12 @@ class Bucket:
         self.totalWeight += weight
 
 class TourManager:
+
+    base = None
     destinationPoints = []
+
+    def __init__(self, origin):
+        self.base = origin
 
     def addPoint(self, point):
         self.destinationPoints.append(point)
@@ -88,12 +106,56 @@ class TourManager:
     def numberOfPoints(self):
         return len(self.destinationPoints)
 
+    def allocateHeuristic(self):
+        tourScore = 0
+        buckets = []
+        for i in range(0, 3):
+            buckets.append(Bucket(540, 1080))
+        removed = set()
+        for bucket in buckets:
+            if len(removed) >= len(self.destinationPoints):
+                break
+            previousPoint = self.base
+            search = True
+            while True:
+                expectedReturns = self.calculateExpectedReturns(removed, previousPoint)
+                if len(expectedReturns) == 0:
+                    break
+                for pointIndex in range(0, len(expectedReturns)):
+                    currentPoint = expectedReturns[pointIndex][0]
+                    if currentPoint.t + previousPoint.timeTo(currentPoint) + bucket.start_time + bucket.timeUsed <= bucket.end_time and bucket.start_time <= currentPoint.t_open <= bucket.end_time and currentPoint.t_close <= bucket.end_time:
+                        bucket.incrementWeight(currentPoint.w)
+                        bucket.incrementTime(currentPoint.t + previousPoint.timeTo(currentPoint))
+                        previousPoint = currentPoint
+                        removed.add(currentPoint.name)
+                        break
+                    if pointIndex == len(expectedReturns) - 1:
+                        search = False
+                if not search:
+                    break
+            tourScore += bucket.totalWeight
+        return tourScore
+
+    def expectedReturn(self, travelTime, activityTime, weight):
+        return (activityTime/(travelTime + activityTime))*weight
+
+    def calculateExpectedReturns(self, removed, previousPoint):
+        returns = []
+        for city in self.destinationPoints:
+            if city.name in removed:
+                continue
+            else:
+                travelTime = previousPoint.timeTo(city)
+                returns.append((city, self.expectedReturn(travelTime, city.t, city.w)))
+        return sorted(returns, key=lambda x: x[1], reverse=True)
+
 class Tour:
     def __init__(self, tourmanager, tour=None):
         self.tourmanager = tourmanager
         self.tour = []
         self.fitness = 0.0
         self.score = 0
+        self.base = tourmanager.base
         if tour is not None:
             self.tour = tour
         else:
@@ -136,25 +198,20 @@ class Tour:
     def getScore(self):
         if self.score == 0:
             tourScore = 0
-            cycles = [480, 480, 480]
             buckets = []
-            for cycle in cycles:
-                buckets.append(Bucket(cycle))
+            for i in range(0, 2):
+                buckets.append(Bucket(540, 1080))
             removed = set()
             for bucket in buckets:
-                previousPoint = None
+                previousPoint = self.base
                 for pointIndex in range(0, self.tourSize()):
                     currentPoint = self.getPoint(pointIndex)
                     if currentPoint.name in removed:
                         continue
-                    if bucket.totalWeight == 0 and currentPoint.t <= bucket.timeAvailable:
+
+                    if currentPoint.t + previousPoint.timeTo(currentPoint) + bucket.start_time + bucket.timeUsed <= bucket.end_time and bucket.start_time <= currentPoint.t_open <= bucket.end_time and currentPoint.t_close <= bucket.end_time:
                         bucket.incrementWeight(currentPoint.w)
-                        bucket.decrementTime(currentPoint.t)
-                        previousPoint = currentPoint
-                        removed.add(currentPoint.name)
-                    elif currentPoint.t + previousPoint.timeTo(currentPoint) <= bucket.timeAvailable:
-                        bucket.incrementWeight(currentPoint.w)
-                        bucket.decrementTime(currentPoint.t + previousPoint.timeTo(currentPoint))
+                        bucket.incrementTime(currentPoint.t + previousPoint.timeTo(currentPoint))
                         previousPoint = currentPoint
                         removed.add(currentPoint.name)
                     else:
@@ -207,7 +264,7 @@ class Population:
 class GA:
     def __init__(self, tourmanager):
         self.tourmanager = tourmanager
-        self.mutationRate = 0.05
+        self.mutationRate = 0.1
         self.tournamentSize = 8
         self.elitism = True
 
@@ -271,73 +328,23 @@ class GA:
         return fittest
 
 if __name__ == '__main__':
+    tourmanager = TourManager(InterestPoint(2000, 2000, 0, 0, "BASE"))
 
-    tourmanager = TourManager()
+    for i in range(25):
+        point = InterestPoint()
+        tourmanager.addPoint(point)
+    heuristicScore = tourmanager.allocateHeuristic()
+    print("Heuristic Weight: " + str(heuristicScore))
 
-    # Create and add our cities
-    point1 = InterestPoint()
-    tourmanager.addPoint(point1)
-    point2 = InterestPoint()
-    tourmanager.addPoint(point2)
-    point3 = InterestPoint()
-    tourmanager.addPoint(point3)
-    point4 = InterestPoint()
-    tourmanager.addPoint(point4)
-    point5 = InterestPoint()
-    tourmanager.addPoint(point5)
-    point6 = InterestPoint()
-    tourmanager.addPoint(point6)
-    point7 = InterestPoint()
-    tourmanager.addPoint(point7)
-    point8 = InterestPoint()
-    tourmanager.addPoint(point8)
-    point9 = InterestPoint()
-    tourmanager.addPoint(point9)
-    point10 = InterestPoint()
-    tourmanager.addPoint(point10)
-    point11 = InterestPoint()
-    tourmanager.addPoint(point11)
-    point12 = InterestPoint()
-    tourmanager.addPoint(point12)
-    point13 = InterestPoint()
-    tourmanager.addPoint(point13)
-    point14 = InterestPoint()
-    tourmanager.addPoint(point14)
-    point15 = InterestPoint()
-    tourmanager.addPoint(point15)
-    point16 = InterestPoint()
-    tourmanager.addPoint(point16)
-    point17 = InterestPoint()
-    tourmanager.addPoint(point17)
-    point18 = InterestPoint()
-    tourmanager.addPoint(point18)
-    point19 = InterestPoint()
-    tourmanager.addPoint(point19)
-    point20 = InterestPoint()
-    tourmanager.addPoint(point20)
-    point21 = InterestPoint()
-    tourmanager.addPoint(point21)
-    point22 = InterestPoint()
-    tourmanager.addPoint(point22)
-    point23 = InterestPoint()
-    tourmanager.addPoint(point23)
-    point24 = InterestPoint()
-    tourmanager.addPoint(point24)
-    point25 = InterestPoint()
-    tourmanager.addPoint(point25)
+    for i in range(10):
+        # Initialize population
+        pop = Population(tourmanager, 160, True)
+        print("GA (Run #" + str(i) + ") Initial Weight: " + str(pop.getFittest().getScore()))
 
-    # Initialize population
-    pop = Population(tourmanager, 100, True)
-    print("Initial Weight: " + str(pop.getFittest().getScore()))
-
-    # Evolve population for 50 generations
-    ga = GA(tourmanager)
-    pop = ga.evolvePopulation(pop)
-    for i in range(0, 200):
+        # Evolve population for 200 generations
+        ga = GA(tourmanager)
         pop = ga.evolvePopulation(pop)
+        for j in range(0, 200):
+            pop = ga.evolvePopulation(pop)
 
-    # Print final results
-    print("Finished")
-    print("Final Weight: " + str(pop.getFittest().getScore()))
-    print("Solution:")
-    print(pop.getFittest())
+        print("GA(Run #" + str(i) + ") Final Weight: " + str(pop.getFittest().getScore()))
